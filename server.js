@@ -1,112 +1,50 @@
 const express = require('express');
 const fs = require('fs');
-const cors = require('cors');
 const path = require('path');
+const cors = require('cors');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-
 app.use(cors());
 app.use(express.json());
 
-// ✅ Путь к файлу, где будут храниться активации
-const ACTIVATION_FILE = path.join(__dirname, 'activations.json');
+const ACTIVATIONS_PATH = path.join(__dirname, 'activations.json');
+const KEYS_PATH = path.join(__dirname, 'keys.txt');
 
-// Загрузка ключей из файла keys.txt
-const KEY_FILE = path.join(__dirname, 'keys.txt');
-
-let validKeys = [];
-
-function loadKeys() {
-  try {
-    const raw = fs.readFileSync(KEY_FILE, 'utf-8');
-    validKeys = raw
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line.length > 0);
-    console.log(`🔑 Загружено ключей: ${validKeys.length}`);
-  } catch (err) {
-    console.error('❌ Не удалось загрузить keys.txt:', err.message);
-    validKeys = [];
+// Загружаем использованные ключи
+function loadUsed() {
+  if (fs.existsSync(ACTIVATIONS_PATH)) {
+    return JSON.parse(fs.readFileSync(ACTIVATIONS_PATH));
   }
+  return {};
 }
 
-// Первичная загрузка
-loadKeys();
-
-// Автообновление ключей при изменении файла
-fs.watchFile(KEY_FILE, (curr, prev) => {
-  if (curr.mtime !== prev.mtime) {
-    console.log('🔄 Обнаружено изменение keys.txt, перезагружаем ключи...');
-    loadKeys();
-  }
-});
-
-
-// Загружаем при старте
-loadKeys();
-
-
-// Загрузка или создание файла активаций
-let activations = {};
-if (fs.existsSync(ACTIVATION_FILE)) {
-  try {
-    activations = JSON.parse(fs.readFileSync(ACTIVATION_FILE, 'utf-8'));
-  } catch (err) {
-    console.error('Ошибка чтения activations.json:', err.message);
-  }
+function saveUsed(data) {
+  fs.writeFileSync(ACTIVATIONS_PATH, JSON.stringify(data, null, 2));
 }
 
-// Сохраняем активации в файл
-function saveActivations() {
-  fs.writeFileSync(ACTIVATION_FILE, JSON.stringify(activations, null, 2), 'utf-8');
-}
-
-// 🌐 Корневой маршрут — чтобы проверить, что сервер жив
-app.get('/', (req, res) => {
-  res.send('🔐 Сервер активации работает!');
-});
-
-// 📋 Список всех активаций (удалить после отладки!)
-app.get('/debug/activations', (req, res) => {
-  res.json(activations);
-});
-
-// 🚀 Активация ключа
+// 📌 ЭТО ГЛАВНЫЙ РАУТ, который ожидает Electron-приложение
 app.post('/activate', (req, res) => {
   const { key, device } = req.body;
+  console.log('🔑 Запрос активации:', key, '📟', device);
 
-  if (!key || !device) {
-    return res.status(400).json({ success: false, message: 'Отсутствует ключ или ID устройства' });
-  }
+  if (!key || !device) return res.json({ success: false });
 
-  if (!validKeys.includes(key)) {
-    return res.status(403).json({ success: false, message: 'Неверный ключ' });
-  }
+  const allKeys = fs.readFileSync(KEYS_PATH, 'utf-8')
+    .split('\n').map(k => k.trim()).filter(Boolean);
 
-  // Проверка: уже ли активирован этот ключ на другом устройстве
-  const alreadyUsedOnAnotherDevice = Object.entries(activations).some(
-    ([id, usedKey]) => usedKey === key && id !== device
-  );
+  const used = loadUsed();
 
-  if (alreadyUsedOnAnotherDevice) {
-    return res.status(403).json({ success: false, message: 'Ключ уже используется на другом устройстве' });
-  }
+  if (!allKeys.includes(key)) return res.json({ success: false });
+  if (Object.values(used).includes(key)) return res.json({ success: false });
 
-  // Если уже активирован этим устройством — считаем успешным
-  if (activations[device] === key) {
-    return res.json({ success: true, message: 'Ключ уже активирован на этом устройстве' });
-  }
+  used[device] = key;
+  saveUsed(used);
 
-  // ✅ Привязываем ключ к устройству
-  activations[device] = key;
-  saveActivations();
-
-  console.log(`✅ Ключ ${key} активирован для устройства ${device}`);
-  return res.json({ success: true, message: 'Активация успешна' });
+  res.json({ success: true });
 });
 
-// 🛠 Запуск сервера
-app.listen(PORT, () => {
-  console.log(`🔧 Сервер запущен на порту ${PORT}`);
-});
+// Для теста GET /
+app.get('/', (req, res) => res.send('🟢 Server is running'));
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Сервер слушает порт ${PORT}`));
